@@ -26,6 +26,7 @@
 #include "util/debug.h"
 #include "util/printf.h"
 #include "util/string.h"
+#include "test/vfstest/myTest.h"
 
 static __attribute__((unused)) void kshell_init()
 {
@@ -49,6 +50,8 @@ static __attribute__((unused)) void kshell_init()
 #endif
 
         kshell_add_command("exit", kshell_exit, "exits the shell");
+        kshell_add_command("do_test", (kshell_cmd_func_t) vfstest_main, "Run tests");
+
 }
 init_func(kshell_init);
 

@@ -25,8 +25,11 @@
 int
 lookup(vnode_t *dir, const char *name, size_t len, vnode_t **result)
 {
-        NOT_YET_IMPLEMENTED("VFS: lookup");
-        return 0;
+    if ( dir->vn_ops->lookup == NULL ) {
+        return -ENOTDIR;
+    }
+    return dir->vn_ops->lookup( dir, name, len, result );
+
 }
 
 
@@ -44,7 +47,7 @@ lookup(vnode_t *dir, const char *name, size_t len, vnode_t **result)
  * curproc->p_cwd.  If pathname[0] == '/', ignore base and start with
  * vfs_root_vn.  dir_namev() should call lookup() to take care of resolving each
  * piece of the pathname.
- *
+ * NAME_LEN
  * Note: A successful call to this causes vnode refcount on *res_vnode to
  * be incremented.
  */
@@ -52,8 +55,135 @@ int
 dir_namev(const char *pathname, size_t *namelen, const char **name,
           vnode_t *base, vnode_t **res_vnode)
 {
-        NOT_YET_IMPLEMENTED("VFS: dir_namev");
-        return 0;
+    /* As in example above, iterate backwards over pathname and get 'ls' */
+    dbg( DBG_VFS, "pathname is: %s\n", pathname);
+    int i, j;
+    char buf[256];
+    memset( buf, 0, 256 );
+    buf[0] = '\0'; /* Initially, just the empty string */
+
+    /*char *pathname_real = strdup( pathname );
+
+    if( pathname[ strlen(pathname) ] == '/' && strlen( pathname ) > 1 ) {
+        for( i = strlen( pathname ); i > 0; i-- ) {
+            if( pathname[i] == '/' && pathname[i - 1] == '/' )
+                pathname_real[ i ] = '\0';
+            else
+                break;
+        }
+    }*/
+
+    for( i = strlen( pathname ); i >= 0; i--) {
+        /* Checks if we have hit a slash, and also if we have extra slashes in the end */
+        if( pathname[i] == '/' ) {
+            if( i == 0 ) {
+                *name = &pathname[i + 1];  
+                *namelen = strlen( &pathname[i + 1] );
+            }
+            else {
+                if ( pathname[i - 1] == '/' || pathname[i + 1] == '/' )
+                    continue;
+                else {
+                    *name = &pathname[i + 1];  
+                    *namelen = strlen( &pathname[i + 1] );
+                }
+            }
+            break;
+        }
+        if( i == 0 ) {
+            *name = &pathname[i];
+            *namelen = strlen( &pathname[i] );
+        }
+    } /* At this point, name contains 'ls' and namelen contains 2 */
+
+
+    /* Check name for errors, specifically for being too long */
+    if( (*namelen) > NAME_LEN ) { 
+            return -ENAMETOOLONG;
+    }
+    
+    if( i < 0 )
+        buf[0] = '\0';
+    else {
+        memcpy( buf, pathname, i );
+        buf[i + 1] = '\0';
+    }
+    dbg( DBG_VFS, "buf: %s buflen: %d\n", buf, strlen( buf ) );
+    /* Get the first token */
+    char s[2] = "/";
+    char* token = NULL;
+    token = strtok( buf, s );
+     
+    /* Handle edge cases */
+    if( !token ) { /* Meaning that we were given something like "/", in the correct case */
+        if( pathname[0] == '/' ) { /* We actually have just a slash */
+            if( lookup( vfs_root_vn, ".", strlen( "." ), res_vnode ) < 0)
+                return -ENOENT;
+            return 0;
+        }
+        else { /* If there is no token, and the first is not "/", then we want
+                to look up the current directory */
+            if( lookup( curproc->p_cwd, ".", strlen("."), res_vnode ) < 0 ) {
+                if( base && (lookup( base, ".", strlen("."), res_vnode ) < 0) )
+                    return -ENOENT;
+                return -ENOENT;
+            }
+
+            return 0;
+        }
+    }
+    dbg( DBG_VFS, "start token: %s token len: %i\n", token, strlen( token ) );
+    /* Here, we want to check a file in the root dir */
+
+    if( strlen( token ) > NAME_LEN ) { /* If the dir name is too long */
+            return -ENAMETOOLONG;
+    }
+
+    int ret;
+    if( pathname[0] == '/' ) { /* Ignore base and start with vfs_root_vn */
+        if( (ret = lookup( vfs_root_vn, token, strlen( token ), res_vnode )) < 0)
+            return -ENOENT;
+    } else if( base == NULL ) { /* Use the process's curr working dir */
+        if( (ret = lookup( curproc->p_cwd, token, strlen( token ), res_vnode )) < 0)
+            return -ENOENT;
+    } else { /* Otherwise, start at the specific base */
+        if( (ret = lookup( base, token, strlen( token ), res_vnode )) < 0)
+            return -ENOENT;
+    }
+
+    dbg( DBG_VFS, "token is: %s\n", token );
+    vnode_t *child;
+    while( token != NULL ) {
+        dbg( DBG_VFS, "In loop, vno: %i\n", (*res_vnode)->vn_vno );
+        /* In the beginning, token is s5fs */
+        /* Perform tests */
+        if( strlen( token ) > NAME_LEN ) { /* If the dir name is too long */
+            vput( *res_vnode );
+            return -ENAMETOOLONG;
+        }
+        else if( !((*res_vnode)->vn_mode & S_IFDIR) ) { /*If the 'dir' is not actually a dir */
+            vput( *res_vnode );
+            return -ENOTDIR;
+        }
+
+        /* Get next token, => bin */
+        if ( !(token = strtok( NULL, s )) ) {
+            
+            /* Don't vput here because we must return with the res node incremented */
+            break;
+        }
+
+        /* Perform lookup in the parent dir */
+        if( lookup( *res_vnode, token, strlen( token ), &child ) < 0 )
+            return -ENOENT;
+
+        /* Decrement the refcount of parent */
+        vput( *res_vnode );
+        (*res_vnode) = child;
+    }
+    dbg( DBG_VFS, "exiting dir_namev, refcount: %i, vno: %i\n", (*res_vnode)->vn_refcount,
+    (*res_vnode)->vn_vno );
+    return 0;
 }
 
 /* This returns in res_vnode the vnode requested by the other parameters.
@@ -66,9 +196,31 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
  */
 int
 open_namev(const char *pathname, int flag, vnode_t **res_vnode, vnode_t *base)
-{
-        NOT_YET_IMPLEMENTED("VFS: open_namev");
-        return 0;
+{   
+    size_t namelen;
+    char name_arr[256];
+    const char *name = name_arr; 
+    vnode_t *dir_namev_res;
+    int ret;
+    dbg( DBG_VFS, "in open_namev\n" );
+    /* Try and find the parent dir (returned in last arg), and the filename */
+    if( (ret = dir_namev( pathname, &namelen, &name, base, &dir_namev_res )) < 0)
+        return ret;
+
+    /* If we find the parent, then lookup the file */
+    ret = lookup( dir_namev_res, name, namelen, res_vnode );
+    dbg( DBG_VFS, "open_namev, ret: %i\n", ret );
+    /* Only O_CREAT is specified (could also have other flags) & file not found */
+    /* ,then create a new file with the specified name */
+    if( (flag & O_CREAT) && ret < 0) { 
+        dbg( DBG_VFS, "Creating file\n" );
+        dir_namev_res->vn_ops->create( dir_namev_res, name, namelen, res_vnode );
+    } else if ( ret < 0 ) {
+        vput( dir_namev_res );
+        return ret;
+    }    
+
+    return 0;
 }
 
 #ifdef __GETCWD__
@@ -82,9 +234,10 @@ open_namev(const char *pathname, int flag, vnode_t **res_vnode, vnode_t *base)
  * inode numbers. */
 int
 lookup_name(vnode_t *dir, vnode_t *entry, char *buf, size_t size)
-{
-        NOT_YET_IMPLEMENTED("GETCWD: lookup_name");
-        return -ENOENT;
+{   
+    ino_t entry_no = entry->vn_vno; /* inode number of entry node */
+    NOT_YET_IMPLEMENTED("GETCWD: lookup_name");
+    return -ENOENT;
 }
 
 
@@ -104,3 +257,5 @@ lookup_dirpath(vnode_t *dir, char *buf, size_t osize)
         return -ENOENT;
 }
 #endif /* __GETCWD__ */
+
+

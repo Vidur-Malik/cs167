@@ -607,8 +607,7 @@ ramfs_write(vnode_t *file, off_t offset, const void *buf, size_t count)
 
         KASSERT(file->vn_len == inode->rf_size);
         file->vn_len = MAX(file->vn_len, offset + ret);
-        inode->rf_size = file->vn_len;
-
+        inode->rf_size = file->vn_len; 
         return ret;
 }
 

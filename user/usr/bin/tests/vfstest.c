@@ -24,6 +24,7 @@
 #include "test/usertest.h"
 #include "test/vfstest/vfstest.h"
 
+#include "test/vfstest/myTest.h"
 #undef __VM__
 
 #else
@@ -596,7 +597,7 @@ vfstest_open(void)
 
         /* Cannot unlink a directory */
         syscall_success(mkdir("file06", 0));
-        syscall_fail(unlink("file06"), EPERM);
+        syscall_fail(unlink("file06"), EPERM); /* Shouldn't this be EISDIR */
         syscall_success(rmdir("file06"));
 
         /* Cannot unlink a non-existent file */
@@ -900,10 +901,10 @@ int main(int argc, char **argv)
 int vfstest_main(int argc, char **argv)
 #endif
 {
-        if (argc != 1) {
+        /*if (argc != 1) {
                 fprintf(stderr, "USAGE: vfstest\n");
                 return 1;
-        }
+        }*/
 
         test_init();
         vfstest_start();

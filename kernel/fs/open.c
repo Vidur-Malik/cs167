@@ -72,7 +72,73 @@ get_empty_fd(proc_t *p)
 
 int
 do_open(const char *filename, int oflags)
-{
-        NOT_YET_IMPLEMENTED("VFS: do_open");
-        return -1;
+{   
+    int cur_fd;
+    dbg( DBG_VFS, "in do_open\n" );
+    /* Get next empty file descriptor */
+    if( (cur_fd = get_empty_fd( curproc )) < 0 ) {
+        /* errno = EMFILE; */
+        return -EMFILE;
+    }
+    /* Get fresh file by calling fget */
+    file_t *cur_file;
+    if( (cur_file = fget( -1 )) == NULL ) {
+        return -ENOMEM; /* No more kernel mem available for a new file */
+    }
+    /* Save the file in the current process's fd table*/
+    curproc->p_files[cur_fd] = cur_file; /* Set the pointer */
+    
+    /* Check the flags, erroring out if necessary */
+    if( oflags & O_RDONLY ) {
+        cur_file->f_mode = FMODE_READ; 
+        if( oflags & O_RDWR )
+            goto error;
+    }
+    else if( oflags & O_WRONLY ) {
+        cur_file->f_mode = FMODE_WRITE;
+        if( oflags & O_RDWR )
+            goto error;
+    }
+    else if( oflags & O_RDWR ) 
+        cur_file->f_mode = (FMODE_READ | FMODE_WRITE);
+
+    if( oflags & O_APPEND )
+        cur_file->f_mode |= FMODE_APPEND;
+
+    /* Now, get the vnode associated with the filename */
+    vnode_t *cur_vnode;
+    int ret = open_namev( filename, oflags, &cur_vnode, NULL );
+
+    /* Set the fields of cur_file */
+    if( ret < 0 ) {
+        /* Clean up the created file */
+        curproc->p_files[cur_fd] = NULL;
+        fput( cur_file ); 
+        return ret; /* Will check for ENAMETOOLONG, ENOENT */
+    }
+    /* Check the cur_vnode for errors */
+    /* If the opened vnode is a dir and we have write permission */
+    if( (cur_vnode->vn_mode & S_IFDIR) && (oflags & O_WRONLY || oflags & O_RDWR) ) {
+        curproc->p_files[cur_fd] = NULL;
+        fput( cur_file );
+        vput( cur_vnode );
+        return -EISDIR;
+    }
+    /* If the opened vnode is a device special file and no device exists */
+    if( (cur_vnode->vn_mode & S_IFCHR && !( cur_vnode->vn_cdev )) ||
+        (cur_vnode->vn_mode & S_IFBLK && !( cur_vnode->vn_bdev )) ) {
+        curproc->p_files[cur_fd] = NULL;
+        fput( cur_file );
+        vput( cur_vnode );
+        return -ENXIO;
+    }
+
+    facq( cur_file, cur_vnode ); /* Set the vnode of this file */
+
+    return cur_fd;
+
+error:
+    curproc->p_files[cur_fd] = NULL;
+    fput( cur_file );
+    return -EINVAL;
 }
