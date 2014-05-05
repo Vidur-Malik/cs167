@@ -63,7 +63,9 @@ do_read(int fd, void *buf, size_t nbytes)
         int b_read = cur_file->f_vnode->vn_ops->read( cur_file->f_vnode, 
                                                 cur_file->f_pos, buf, nbytes );
         /* Update the position in the file by the amount of bytes read */
-        cur_file->f_pos += b_read;
+        if( b_read >= 0 )
+            cur_file->f_pos += b_read;
+
         fput( cur_file );
 
         return b_read;
@@ -93,18 +95,20 @@ do_write(int fd, const void *buf, size_t nbytes)
                 fput( cur_file );
                 return -EBADF;
         }
+        int ret;
         /* Check to see if fd is in appending mode */
         if( cur_file->f_mode & FMODE_APPEND ) {
-                do_lseek( fd, 0, SEEK_END ); /* Move to the end of the file */
+                if( (ret = do_lseek( fd, 0, SEEK_END )) < 0 ) {
+                    fput(cur_file);
+                    return ret; /* Move to the end of the file */
+                }
         }
-         dbg( DBG_VFS, "fmode is: %i\n", cur_file->f_mode );
-        dbg( DBG_VFS, "file has pos: %i\n", cur_file->f_pos );
-        dbg( DBG_VFS, "nbytes: %i\n", nbytes );
         /* Call the specific read func associated with the FS */
         int b_written = cur_file->f_vnode->vn_ops->write( cur_file->f_vnode, 
                                                 cur_file->f_pos, buf, nbytes );
         /* Update the position in the file by the amount of bytes read */
-        cur_file->f_pos += b_written;
+        if( b_written > 0 )
+            cur_file->f_pos += b_written;
         
         fput( cur_file );
 
@@ -131,8 +135,9 @@ do_close(int fd)
         /* Set the pointer to the open file to NULL */
         curproc->p_files[fd] = NULL;
         /* Decrement reference count twice ??*/
+        fput( cur_file );
         if( cur_file->f_refcount > 0 )
-                fput( cur_file ); /* Once for the fget in this function */
+             fput( cur_file ); /* Once for the fget in this function */
         /* fput( cur_file );  Once for actually closing */
 
         return 0;
@@ -306,8 +311,6 @@ do_mkdir(const char *path)
 
         if( (ret = dir_namev( path, &namelen, &name, NULL, &res_node )) < 0 ) 
                 return ret; /* Takes care of ENAMETOOLONG, ENOENT, ENOTDIR */
-        dbg( DBG_VFS, "file refcount 0: %i, vno: %i\n", res_node->vn_refcount, 
-                res_node->vn_vno );
         vnode_t *path_node;
         /* Now, check if the file we are trying to create already exists */
         if( lookup( res_node, name, namelen, &path_node ) == 0 ) {
@@ -315,9 +318,7 @@ do_mkdir(const char *path)
                 vput( path_node );
                 return -EEXIST;
         }
-        dbg( DBG_VFS, "file refcount 1: %i\n", res_node->vn_refcount );
         ret = res_node->vn_ops->mkdir( res_node, name, namelen );
-        dbg( DBG_VFS, "file refcount 2: %i\n", res_node->vn_refcount );
         vput( res_node );
         return ret;
 }
@@ -394,6 +395,7 @@ do_unlink(const char *path)
                 vput( path_node );
         }
         else {
+            vput( res_node );
             return -ENOENT;
         }
         /* ?? */
@@ -448,6 +450,7 @@ do_link(const char *from, const char *to)
         ret = res_node_to->vn_ops->link( res_node_from, res_node_to, name, namelen );
         /* Call the link function */
         vput( res_node_from );
+        vput( res_node_to ); 
         return ret;
 }
 
@@ -536,6 +539,7 @@ do_getdent(int fd, struct dirent *dirp)
 
         /* Check if the function is null */
         if( !cur_file->f_vnode->vn_ops->readdir ) {
+                fput( cur_file );
                 return -ENOTDIR;
         }
 
@@ -628,15 +632,17 @@ do_stat(const char *path, struct stat *buf)
             return -EINVAL;
         char name_buf[256]; const char *name = name_buf; size_t namelen; int ret;
         if( (ret = open_namev( path, 0, &res_node, NULL )) < 0 )
-                return ret; 
+            return ret; 
 
         if( res_node->vn_ops->stat) {
-                ret =  res_node->vn_ops->stat( res_node, buf );
-                vput( res_node );
-                return ret;
+            ret =  res_node->vn_ops->stat( res_node, buf );
+            vput( res_node );
+            return ret;
         }
-        else 
-                return -1;
+        else {
+            vput( res_node );
+            return -1;
+        }
 }
 
 #ifdef __MOUNTING__

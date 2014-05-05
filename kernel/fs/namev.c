@@ -56,22 +56,10 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
           vnode_t *base, vnode_t **res_vnode)
 {
     /* As in example above, iterate backwards over pathname and get 'ls' */
-    dbg( DBG_VFS, "pathname is: %s\n", pathname);
     int i, j;
     char buf[256];
     memset( buf, 0, 256 );
     buf[0] = '\0'; /* Initially, just the empty string */
-
-    /*char *pathname_real = strdup( pathname );
-
-    if( pathname[ strlen(pathname) ] == '/' && strlen( pathname ) > 1 ) {
-        for( i = strlen( pathname ); i > 0; i-- ) {
-            if( pathname[i] == '/' && pathname[i - 1] == '/' )
-                pathname_real[ i ] = '\0';
-            else
-                break;
-        }
-    }*/
 
     for( i = strlen( pathname ); i >= 0; i--) {
         /* Checks if we have hit a slash, and also if we have extra slashes in the end */
@@ -96,7 +84,6 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
         }
     } /* At this point, name contains 'ls' and namelen contains 2 */
 
-
     /* Check name for errors, specifically for being too long */
     if( (*namelen) > NAME_LEN ) { 
             return -ENAMETOOLONG;
@@ -108,7 +95,6 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
         memcpy( buf, pathname, i );
         buf[i + 1] = '\0';
     }
-    dbg( DBG_VFS, "buf: %s buflen: %d\n", buf, strlen( buf ) );
     /* Get the first token */
     char s[2] = "/";
     char* token = NULL;
@@ -132,9 +118,7 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
             return 0;
         }
     }
-    dbg( DBG_VFS, "start token: %s token len: %i\n", token, strlen( token ) );
     /* Here, we want to check a file in the root dir */
-
     if( strlen( token ) > NAME_LEN ) { /* If the dir name is too long */
             return -ENAMETOOLONG;
     }
@@ -151,10 +135,8 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
             return -ENOENT;
     }
 
-    dbg( DBG_VFS, "token is: %s\n", token );
     vnode_t *child;
     while( token != NULL ) {
-        dbg( DBG_VFS, "In loop, vno: %i\n", (*res_vnode)->vn_vno );
         /* In the beginning, token is s5fs */
         /* Perform tests */
         if( strlen( token ) > NAME_LEN ) { /* If the dir name is too long */
@@ -181,8 +163,7 @@ dir_namev(const char *pathname, size_t *namelen, const char **name,
         vput( *res_vnode );
         (*res_vnode) = child;
     }
-    dbg( DBG_VFS, "exiting dir_namev, refcount: %i, vno: %i\n", (*res_vnode)->vn_refcount,
-    (*res_vnode)->vn_vno );
+
     return 0;
 }
 
@@ -202,24 +183,23 @@ open_namev(const char *pathname, int flag, vnode_t **res_vnode, vnode_t *base)
     const char *name = name_arr; 
     vnode_t *dir_namev_res;
     int ret;
-    dbg( DBG_VFS, "in open_namev\n" );
     /* Try and find the parent dir (returned in last arg), and the filename */
     if( (ret = dir_namev( pathname, &namelen, &name, base, &dir_namev_res )) < 0)
         return ret;
 
     /* If we find the parent, then lookup the file */
     ret = lookup( dir_namev_res, name, namelen, res_vnode );
-    dbg( DBG_VFS, "open_namev, ret: %i\n", ret );
     /* Only O_CREAT is specified (could also have other flags) & file not found */
     /* ,then create a new file with the specified name */
     if( (flag & O_CREAT) && ret < 0) { 
-        dbg( DBG_VFS, "Creating file\n" );
         dir_namev_res->vn_ops->create( dir_namev_res, name, namelen, res_vnode );
     } else if ( ret < 0 ) {
         vput( dir_namev_res );
         return ret;
     }    
-
+    if( dir_namev_res )
+        vput( dir_namev_res );
+    KASSERT( res_vnode );
     return 0;
 }
 

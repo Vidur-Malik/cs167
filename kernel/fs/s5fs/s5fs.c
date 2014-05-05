@@ -193,6 +193,22 @@ s5fs_mount(struct fs *fs)
 /*
  * See the comment in vfs.h for what is expected of this function.
  *
+ *       * (FROM vfs.h)
+         * This is called by vget.
+         *
+         * read_vnode will be passed a vnode_t*, which will have its vn_fs
+         * and vn_vno fields initialized.
+         *
+         * read_vnode must initialize the following members of the provided
+         * vnode_t:
+         *     vn_ops
+         *     vn_mode
+         *         and vn_devid if appropriate
+         *     vn_len
+         *     vn_i
+         *
+         * This entry point is ALLOWED TO BLOCK.
+
  * When this function returns, the inode link count should be incremented.
  * Note that most UNIX filesystems don't do this, they have a separate
  * flag to indicate that the VFS is using a file. However, this is
@@ -212,13 +228,67 @@ s5fs_mount(struct fs *fs)
  */
 static void
 s5fs_read_vnode(vnode_t *vnode)
-{
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_read_vnode");
+{       /* vn_fs and vn_vno are initialized */
+        /* ERROR: Following assertion not working */
+        /* KASSERT( vnode->vn_fs != NULL && vnode->vn_vno != NULL ); */
+        /* Out job is to initialize vn_ops, vn_mode, vn_len, vn_i and vn_devid 
+         if appropriate */
+
+        /* First, we need the inode 
+        // Let's first get the block number */
+        int block_number = S5_INODE_BLOCK( vnode->vn_vno );
+        /* Let's now get the fs memory object */
+        s5fs_t *fs = VNODE_TO_S5FS( vnode );
+        struct mmobj *fs_mem = S5FS_TO_VMOBJ( fs );
+        /* Let's get the page frame */
+        pframe_t *frame;
+        pframe_get( fs_mem, block_number, &frame );
+        /* We now have the beginning of the correct block (pf_addr in the frame)
+        // So let's get the offset inside the block */
+        int offset = S5_INODE_OFFSET( vnode->vn_vno );
+        /* To get the inode, we can index into the block */
+        s5_inode_t *inode = (s5_inode_t *)(frame->pf_addr 
+                                        + (sizeof( s5_inode_t ) * offset ));
+
+        vnode->vn_i = inode;
+        vnode->vn_len = inode->s5_size;
+
+        switch (inode->s5_type) {
+            case S5_TYPE_DATA:
+                vnode->vn_mode = S_IFREG;
+                vnode->vn_ops = &s5fs_file_vops;
+                break;
+            case S5_TYPE_DIR:
+                vnode->vn_mode = S_IFDIR;
+                vnode->vn_ops = &s5fs_dir_vops;
+                break;
+            case S5_TYPE_CHR:
+                vnode->vn_mode = S_IFCHR;
+                vnode->vn_ops = NULL;
+                vnode->vn_devid = (devid_t)(inode->s5_indirect_block);
+                break;
+            case S5_TYPE_BLK:
+                vnode->vn_mode = S_IFBLK;
+                vnode->vn_ops = NULL;
+                vnode->vn_devid = (devid_t)(inode->s5_indirect_block);
+                break;
+            default:
+                    panic("inode %d has unknown/invalid type %d!!\n",
+                         (int)vnode->vn_vno, (int)inode->s5_type);
+        }
+
+        inode->s5_linkcount++;
+        pframe_pin( frame );
 }
 
 /*
  * See the comment in vfs.h for what is expected of this function.
- *
+         * (From vfs.h)
+         * The inverse of read_vnode; delete_vnode is called by vput when the
+         * specified vnode_t no longer needs to exist (it is neither actively
+         * nor passively referenced).
+         *
+         * This entry point is ALLOWED TO BLOCK.
  * When this function returns, the inode refcount should be decremented.
  *
  * You probably want to use s5_free_inode() if there are no more links to
@@ -227,12 +297,27 @@ s5fs_read_vnode(vnode_t *vnode)
 static void
 s5fs_delete_vnode(vnode_t *vnode)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_delete_vnode");
+    s5_inode_t *inode = VNODE_TO_S5INODE( vnode );
+    int block_no = S5_INODE_BLOCK( inode->s5_number );
+
+    pframe_t *frame;
+    /* ERROR: Pagenum? */
+    pframe_get( S5FS_TO_VMOBJ(VNODE_TO_S5FS( vnode )), block_no, &frame );
+    inode->s5_linkcount--;
+    /* Delete the inode */
+    if( inode->s5_linkcount == 0 ) {
+        s5_free_inode( vnode );
+    }
+    /* Do we unpin always or just when linkcount is 0? */
+    pframe_unpin( frame );
 }
 
 /*
  * See the comment in vfs.h for what is expected of this function.
- *
+         * Returns 1 if the vnode still exists in the filesystem, 0 of it can
+         * be deleted. Called by vput when there are no active references to
+         * the vnode. If query_vnode returns 0, vput evicts all pages of the vnode
+         * from memory so that it can be deleted.
  * The vnode still exists on disk if it has a linkcount greater than 1.
  * (Remember, VFS takes a reference on the inode as long as it uses it.)
  *
@@ -240,8 +325,7 @@ s5fs_delete_vnode(vnode_t *vnode)
 static int
 s5fs_query_vnode(vnode_t *vnode)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_query_vnode");
-        return 0;
+    return VNODE_TO_S5INODE( vnode )->s5_linkcount > 1;
 }
 
 /*
@@ -322,16 +406,22 @@ s5fs_umount(fs_t *fs)
 static int
 s5fs_read(vnode_t *vnode, off_t offset, void *buf, size_t len)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_read");
-        return -1;
+    kmutex_lock( &(vnode->vn_mutex) );
+    int ret = s5_read_file( vnode, offset, buf, len );
+    kmutex_unlock( &(vnode->vn_mutex) );
+    return ret;
 }
 
 /* Simply call s5_write_file. */
 static int
 s5fs_write(vnode_t *vnode, off_t offset, const void *buf, size_t len)
-{
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_write");
-        return -1;
+{   
+    kmutex_lock( &(vnode->vn_mutex) );
+
+    int ret = s5_write_file( vnode, offset, buf, len );
+
+    kmutex_unlock( &(vnode->vn_mutex) );
+    return ret;
 }
 
 /* This function is deceptivly simple, just return the vnode's
@@ -342,15 +432,15 @@ s5fs_write(vnode_t *vnode, off_t offset, const void *buf, size_t len)
  */
 static int
 s5fs_mmap(vnode_t *file, vmarea_t *vma, mmobj_t **ret)
-{
-        NOT_YET_IMPLEMENTED("VM: s5fs_mmap");
-
-        return 0;
+{   
+    *ret = &(file->vn_mmobj);
+    return 0;
 }
 
 /*
  * See the comment in vnode.h for what is expected of this function.
- *
+ **      * create is called by open_namev(). it should vget() a new vnode,
+         * and create an entry for this vnode in 'dir' of the specified name.
  * When this function returns, the inode refcount of the file should be 2
  * and the vnode refcount should be 1.
  *
@@ -359,8 +449,30 @@ s5fs_mmap(vnode_t *file, vmarea_t *vma, mmobj_t **ret)
 static int
 s5fs_create(vnode_t *dir, const char *name, size_t namelen, vnode_t **result)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_create");
-        return -1;
+    s5_inode_t *inode = VNODE_TO_S5INODE( dir );
+    kmutex_lock( &(dir->vn_mutex) );
+    
+    int ino = s5_alloc_inode( dir->vn_fs, S5_TYPE_DATA, 0 );
+    if( ino < 0 ) {
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ino;
+    }
+
+    vnode_t *entry = vget( dir->vn_fs, (ino_t) ino );
+    
+    int ret;
+    if( (ret = s5_link( dir, entry, name, namelen )) < 0 ) {
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ret;
+    }
+
+    *result = entry;
+
+    KASSERT( entry->vn_refcount == 1 );
+    KASSERT( VNODE_TO_S5INODE( entry )->s5_linkcount == 2 );
+
+    kmutex_unlock( &(dir->vn_mutex) );
+    return 0;
 }
 
 
@@ -370,30 +482,71 @@ s5fs_create(vnode_t *dir, const char *name, size_t namelen, vnode_t **result)
  * This function is similar to s5fs_create, but it creates a special
  * file specified by 'devid'.
  *
+ * ERROR: What are the linkcounts supposed to be for this?
+    inode refcount of the file should be 2
+ *  and the vnode refcount should be 1
  * You probably want to use s5_alloc_inode, s5_link(), vget(), and vput().
  */
 static int
 s5fs_mknod(vnode_t *dir, const char *name, size_t namelen, int mode, devid_t devid)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_mknod");
-        return -1;
+    s5_inode_t *inode = VNODE_TO_S5INODE( dir );
+    kmutex_lock( &(dir->vn_mutex) );
+
+    /* ERROR: How to check for out of space in the directory? */
+    int ino;
+    if (S_ISCHR(mode)) {
+        if (0 > (ino = s5_alloc_inode(dir->vn_fs, S5_TYPE_CHR, devid))) {
+            kmutex_unlock( &(dir->vn_mutex) );
+            return ino;
+        }
+    } else if (S_ISBLK(mode)) {
+        if (0 > (ino = s5_alloc_inode(dir->vn_fs, S5_TYPE_BLK, devid))) {
+            kmutex_unlock( &(dir->vn_mutex) );
+            return ino;
+        }
+    } else {
+        kmutex_unlock( &(dir->vn_mutex) );
+        panic("Invalid mode!\n");
+    }
+
+    vnode_t *entry = vget( dir->vn_fs, (ino_t) ino );
+    int ret;
+
+    if( (ret = s5_link( dir, entry, name, namelen )) < 0) {
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ret;
+    }
+
+    vput( entry );
+    kmutex_unlock( &(dir->vn_mutex) );
+    return 0;
 }
 
 /*
  * See the comment in vnode.h for what is expected of this function.
- *
+ *      lookup sets *result to the vnode in dir with the specified name
  * You probably want to use s5_find_dirent() and vget().
  */
 int
 s5fs_lookup(vnode_t *base, const char *name, size_t namelen, vnode_t **result)
-{
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_lookup");
-        return -1;
+{   
+    kmutex_lock( &(base->vn_mutex) );
+    int ino = s5_find_dirent( base, name, namelen );
+    if( ino < 0 ) {
+        kmutex_unlock( &(base->vn_mutex) );
+        return ino;
+    }
+
+    *result = vget( base->vn_fs, ino );
+    kmutex_unlock( &(base->vn_mutex) );
+    return 0;
 }
 
 /*
  * See the comment in vnode.h for what is expected of this function.
- *
+ *       * link sets up a hard link. it links oldvnode into dir with the
+         * specified name.
  * When this function returns, the inode refcount of the linked file
  * should be incremented.
  *
@@ -401,9 +554,18 @@ s5fs_lookup(vnode_t *base, const char *name, size_t namelen, vnode_t **result)
  */
 static int
 s5fs_link(vnode_t *src, vnode_t *dir, const char *name, size_t namelen)
-{
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_link");
-        return -1;
+{   
+    kmutex_lock( &(src->vn_mutex) );
+    if( src != dir )
+        kmutex_lock( &(dir->vn_mutex) );
+    
+    int ret = s5_link( src, dir, name, namelen ); 
+    
+    kmutex_unlock( &(src->vn_mutex) );
+    if( src != dir )
+        kmutex_unlock( &(dir->vn_mutex) );
+
+    return ret;
 }
 
 /*
@@ -417,8 +579,13 @@ s5fs_link(vnode_t *src, vnode_t *dir, const char *name, size_t namelen)
 static int
 s5fs_unlink(vnode_t *dir, const char *name, size_t namelen)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_unlink");
-        return -1;
+    kmutex_lock( &(dir->vn_mutex) );
+
+    int ret = s5_remove_dirent( dir, name, namelen );
+
+    kmutex_unlock( &(dir->vn_mutex) );
+
+    return ret;
 }
 
 /*
@@ -442,8 +609,56 @@ s5fs_unlink(vnode_t *dir, const char *name, size_t namelen)
 static int
 s5fs_mkdir(vnode_t *dir, const char *name, size_t namelen)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_mkdir");
-        return -1;
+    s5_inode_t *inode = VNODE_TO_S5INODE( dir );
+    kmutex_lock( &(dir->vn_mutex) );
+
+    /* Allocate a new inode for the new directory */
+    int ino, ret;
+    if (0 > (ino = s5_alloc_inode(dir->vn_fs, S5_TYPE_DIR, 0))) {
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ino;
+    }
+
+    /* Link the new dir to the parent dir */
+    /* child refcount = 1 */
+    vnode_t *child = vget( dir->vn_fs, ino );
+    int par_refs = inode->s5_linkcount;
+
+    if( (ret = s5_link( dir, child, name, namelen )) < 0 ) {
+        vput(child);
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ret;
+    }
+
+    /* Make the . and .. entries and link them */
+
+    /* For ".", link the dir to itself */
+    /*  */
+    if( (ret = s5_link( child, child, ".", 1 )) < 0 ) {
+        vput(child);
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ret;
+    }
+
+    /* For "..", link the child to the parent */
+    if( (ret = s5_link( child, dir, "..", 2 )) < 0 ) {
+        vput(child);
+        kmutex_unlock( &(dir->vn_mutex) );
+        return ret;
+    }
+
+    /* Must decrement the refcount of the child by 1 (for convention) */
+    /* Now, since we called vget and s5_link twice, we have refcount of 3 here */
+    
+    /* VNODE_TO_S5INODE( child )->s5_linkcount -= 1; */
+    s5_dirent_t dirent;
+    /* KASSERT( VNODE_TO_S5INODE( child )->s5_linkcount == 1 ); */
+    KASSERT( s5_find_dirent( child, ".", 1 ) >= 0 );
+    KASSERT( s5_find_dirent( child, "..", 2 ) >= 0 );
+    KASSERT( inode->s5_linkcount = par_refs + 1 );
+    vput(child);
+    kmutex_unlock( &(dir->vn_mutex) );
+    return 0;
 }
 
 /*
@@ -459,8 +674,43 @@ s5fs_mkdir(vnode_t *dir, const char *name, size_t namelen)
 static int
 s5fs_rmdir(vnode_t *parent, const char *name, size_t namelen)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_rmdir");
-        return -1;
+    kmutex_lock( &(parent->vn_mutex) );
+
+    int ino = s5_find_dirent( parent, name, namelen );
+    if( ino < 0 ) {
+        kmutex_unlock( &(parent->vn_mutex) );
+        return ino;
+    }
+
+    vnode_t *child = vget( parent->vn_fs, ino );
+
+    if( !(VNODE_TO_S5INODE( child )->s5_type & S5_TYPE_DIR) ) {
+        vput( child );
+        kmutex_unlock( &(parent->vn_mutex) );
+        return -ENOTDIR;
+    }
+
+    /* Check if the directory is empty */
+    
+    if( child->vn_len > (2 * sizeof( s5_dirent_t )) ) {
+        vput( child ); 
+        kmutex_unlock( &(parent->vn_mutex) );
+        return -ENOTEMPTY;
+    }
+
+    /* Remove the dir */
+    int ret;
+    if( (ret = s5_remove_dirent( parent, name, namelen )) < 0 ) {
+        vput( child );
+        kmutex_unlock( &(parent->vn_mutex) );
+        return ret;
+    }
+    /* Decrement refcount on the parent */
+    VNODE_TO_S5INODE( parent )->s5_linkcount--;
+    /* One for previous vget and one for actual removal */
+    vput( child );
+    kmutex_unlock( &(parent->vn_mutex) );
+    return 0;
 }
 
 
@@ -474,9 +724,20 @@ s5fs_rmdir(vnode_t *parent, const char *name, size_t namelen)
  */
 static int
 s5fs_readdir(vnode_t *vnode, off_t offset, struct dirent *d)
-{
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_readdir");
-        return -1;
+{   
+    kmutex_lock( &(vnode->vn_mutex) );
+    if( offset == vnode->vn_len ) {
+        kmutex_unlock( &(vnode->vn_mutex) );
+        return 0;
+    }
+    s5_dirent_t temp;
+    int bytes_read = s5_read_file( vnode, offset, (char *) &temp, sizeof( s5_dirent_t ) );
+    d->d_ino = temp.s5d_inode;
+    d->d_off = bytes_read;
+    memcpy( d->d_name, temp.s5d_name, S5_NAME_LEN );
+
+    kmutex_unlock( &(vnode->vn_mutex) );
+    return bytes_read;
 }
 
 
@@ -491,23 +752,50 @@ s5fs_readdir(vnode_t *vnode, off_t offset, struct dirent *d)
  */
 static int
 s5fs_stat(vnode_t *vnode, struct stat *ss)
-{
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_stat");
-        return -1;
+{   
+    kmutex_lock( &(vnode->vn_mutex) );
+    s5_inode_t *inode = VNODE_TO_S5INODE( vnode );
+
+    ss->st_mode    = vnode->vn_mode;
+    ss->st_ino     = inode->s5_number;
+    ss->st_nlink   = inode->s5_linkcount;
+    ss->st_size    = inode->s5_size;
+    ss->st_blksize = S5_BLOCK_SIZE;
+    ss->st_blocks  = s5_inode_blocks( vnode );
+    kmutex_unlock( &(vnode->vn_mutex) );
+
+    return 0;
 }
 
 
 /*
  * See the comment in vnode.h for what is expected of this function.
- *
+ *       * Read the page of 'vnode' containing 'offset' into the
+         * page-aligned and page-sized buffer pointed to by
+         * 'pagebuf'.
  * You'll probably want to use s5_seek_to_block and the device's
  * read_block function.
  */
 static int
 s5fs_fillpage(vnode_t *vnode, off_t offset, void *pagebuf)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_fillpage");
-        return -1;
+    int block_no = s5_seek_to_block( vnode, offset, 0 );
+    s5fs_t *fs = VNODE_TO_S5FS( vnode );
+
+    if( block_no < 0 ) {
+        return block_no;
+    }
+
+    if( !fs->s5f_bdev ) {
+        return -ENXIO;
+    }
+
+    int ret;
+    if( (ret = fs->s5f_bdev->bd_ops->read_block( fs->s5f_bdev, (char *) pagebuf,
+                                                block_no, 1 )) < 0 ) {
+        return ret;
+    }
+    return 0;
 }
 
 
@@ -528,8 +816,7 @@ s5fs_fillpage(vnode_t *vnode, off_t offset, void *pagebuf)
 static int
 s5fs_dirtypage(vnode_t *vnode, off_t offset)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_dirtypage");
-        return -1;
+    return s5_seek_to_block( vnode, offset, 1 );
 }
 
 /*
@@ -538,8 +825,24 @@ s5fs_dirtypage(vnode_t *vnode, off_t offset)
 static int
 s5fs_cleanpage(vnode_t *vnode, off_t offset, void *pagebuf)
 {
-        NOT_YET_IMPLEMENTED("S5FS: s5fs_cleanpage");
-        return -1;
+    int block_no = s5_seek_to_block( vnode, offset, 0 );
+    s5fs_t *fs = VNODE_TO_S5FS( vnode );
+
+    if( block_no < 0 ) {
+        return block_no;
+    }
+
+    if( !fs->s5f_bdev ) {
+        return -ENXIO;
+    }
+
+    int ret;
+    if( (ret = fs->s5f_bdev->bd_ops->write_block( fs->s5f_bdev, (char *) pagebuf,
+                                                  block_no, 1 )) < 0 ) {
+        return ret;
+    }
+    
+    return 0;
 }
 
 /* Diagnostic/Utility: */

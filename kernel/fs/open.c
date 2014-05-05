@@ -74,7 +74,6 @@ int
 do_open(const char *filename, int oflags)
 {   
     int cur_fd;
-    dbg( DBG_VFS, "in do_open\n" );
     /* Get next empty file descriptor */
     if( (cur_fd = get_empty_fd( curproc )) < 0 ) {
         /* errno = EMFILE; */
@@ -89,12 +88,8 @@ do_open(const char *filename, int oflags)
     curproc->p_files[cur_fd] = cur_file; /* Set the pointer */
     
     /* Check the flags, erroring out if necessary */
-    if( oflags & O_RDONLY ) {
-        cur_file->f_mode = FMODE_READ; 
-        if( oflags & O_RDWR )
-            goto error;
-    }
-    else if( oflags & O_WRONLY ) {
+    
+    if( oflags & O_WRONLY ) {
         cur_file->f_mode = FMODE_WRITE;
         if( oflags & O_RDWR )
             goto error;
@@ -102,6 +97,11 @@ do_open(const char *filename, int oflags)
     else if( oflags & O_RDWR ) 
         cur_file->f_mode = (FMODE_READ | FMODE_WRITE);
 
+    else if( (oflags & O_RDONLY) == 0 ) {
+        cur_file->f_mode = FMODE_READ; 
+        if( oflags & O_RDWR )
+            goto error;
+    }
     if( oflags & O_APPEND )
         cur_file->f_mode |= FMODE_APPEND;
 

@@ -91,7 +91,7 @@ typedef struct s5_inode {
 #define        s5_next_free s5_un.s5_next_free
 #define        s5_size      s5_un.s5_size
         uint32_t   s5_number;              /* this inode's number */
-        uint16_t   s5_type;         /* one of S5_TYPE_{FREE,DATA,DIR} */
+        uint16_t   s5_type;         /* one of S5_TYPE_{FREE,DATA,DIR,CHR,BLK} */
         int16_t    s5_linkcount;    /* link count of this inode */
         uint32_t   s5_direct_blocks[S5_NDIRECT_BLOCKS];
         uint32_t   s5_indirect_block;

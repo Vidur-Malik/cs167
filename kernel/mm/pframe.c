@@ -296,9 +296,28 @@ pframe_fill(pframe_t *pf)
  */
 int
 pframe_get(struct mmobj *o, uint32_t pagenum, pframe_t **result)
-{
-        NOT_YET_IMPLEMENTED("S5FS: pframe_get");
-        return 0;
+{       
+    /* Try and get the resident page */
+    (*result) = pframe_get_resident( o, pagenum );
+    if( !(*result) ) { /* No resident page found */
+        /* Then allocate a new page */
+        if( ((*result) = pframe_alloc( o, pagenum )) == NULL ) 
+            return -ENOSPC;
+        /* And then, fill it */
+        int ret;
+        if( (ret = pframe_fill( *result )) < 0) 
+            return ret;
+        /* See if we need to call pageoutd and wake it up */
+        if( pageoutd_needed( ) ) {
+            pageoutd_wakeup( );
+        }
+    }
+    /* Wait till pframe is not busy */
+    while( pframe_is_busy( *result ) ) {
+        sched_sleep_on( &(*result)->pf_waitq );
+    }
+    KASSERT( !pframe_is_busy( *result ) );
+    return 0;
 }
 
 int
@@ -357,7 +376,17 @@ pframe_migrate(pframe_t *pf, mmobj_t *dest)
 void
 pframe_pin(pframe_t *pf)
 {
-        NOT_YET_IMPLEMENTED("S5FS: pframe_pin");
+    KASSERT( pf );
+    /* If pframe is not pinned */
+    if( !pframe_is_pinned( pf ) ) {
+        /* Then, remove the list link from the alloc'd list */
+        list_remove( &pf->pf_link );
+        list_insert_tail( &pinned_list, &pf->pf_link );
+        /* Decrement allocated pages count and increment pinned pages count */
+        nallocated--;
+        npinned++;
+    }
+    pf->pf_pincount++;
 }
 
 /*
@@ -373,7 +402,20 @@ pframe_pin(pframe_t *pf)
 void
 pframe_unpin(pframe_t *pf)
 {
-        NOT_YET_IMPLEMENTED("S5FS: pframe_unpin");
+    KASSERT( pf );
+    /* If trying to unpin an already unpinned page */
+    if( !pframe_is_pinned( pf ) ) 
+        return;
+    /* If pincount were to reach 0 */
+    if( pf->pf_pincount - 1 == 0 ) {
+        /* Then, remove the list link from the pinned'd list */
+        list_remove( &pf->pf_link );
+        list_insert_tail( &alloc_list, &pf->pf_link );
+        /* Decrement allocated pages count and increment pinned pages count */
+        nallocated++;
+        npinned--;
+    }
+    pf->pf_pincount--;
 }
 
 /*
