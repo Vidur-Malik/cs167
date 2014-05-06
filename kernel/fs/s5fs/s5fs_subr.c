@@ -313,7 +313,9 @@ s5_alloc_block(s5fs_t *fs)
         uint32_t next = superblock->s5s_free_blocks[ S5_NBLKS_PER_FNODE - 1 ];
         /* Get the page of the superblock */
         pframe_t *next_frame;
-        pframe_get( S5FS_TO_VMOBJ(fs), next, &next_frame );
+        int ret;
+        if( (ret = pframe_get( S5FS_TO_VMOBJ(fs), next, &next_frame )) < 0 )
+            return ret;
         pframe_pin( next_frame );
         memcpy( (void *) &(superblock->s5s_free_blocks[0]), next_frame->pf_addr
                 , S5_NBLKS_PER_FNODE * sizeof( uint32_t ) );
