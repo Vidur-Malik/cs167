@@ -609,6 +609,7 @@ s5fs_unlink(vnode_t *dir, const char *name, size_t namelen)
 static int
 s5fs_mkdir(vnode_t *dir, const char *name, size_t namelen)
 {
+    s5_dirent_t dirent;
     s5_inode_t *inode = VNODE_TO_S5INODE( dir );
     kmutex_lock( &(dir->vn_mutex) );
 
@@ -650,8 +651,8 @@ s5fs_mkdir(vnode_t *dir, const char *name, size_t namelen)
     /* Must decrement the refcount of the child by 1 (for convention) */
     /* Now, since we called vget and s5_link twice, we have refcount of 3 here */
     
-    /* VNODE_TO_S5INODE( child )->s5_linkcount -= 1; */
-    s5_dirent_t dirent;
+     VNODE_TO_S5INODE( child )->s5_linkcount -= 1; 
+
     /* KASSERT( VNODE_TO_S5INODE( child )->s5_linkcount == 1 ); */
     KASSERT( s5_find_dirent( child, ".", 1 ) >= 0 );
     KASSERT( s5_find_dirent( child, "..", 2 ) >= 0 );
@@ -815,8 +816,12 @@ s5fs_fillpage(vnode_t *vnode, off_t offset, void *pagebuf)
  */
 static int
 s5fs_dirtypage(vnode_t *vnode, off_t offset)
-{
-    return s5_seek_to_block( vnode, offset, 1 );
+{   
+    int ret;
+    if( (ret = s5_seek_to_block( vnode, offset, 1 )) )
+        return 0;
+    else
+        return ret;
 }
 
 /*

@@ -86,12 +86,14 @@ s5_seek_to_block(vnode_t *vnode, off_t seekptr, int alloc)
             return ret;
         pframe_pin( frame );
         block_no = *( (int *) frame->pf_addr 
-                    + (( block_index - S5_NDIRECT_BLOCKS ) * sizeof( uint32_t )) );
+                    + (( block_index - S5_NDIRECT_BLOCKS ) ) );
+        pframe_unpin(frame);
     }
     /* If the block is sparse  */
     if( !block_no ) {
-        if( !alloc )
+        if( !alloc ) {
             return 0;
+        }
         else {
             if( (block_no = s5_alloc_block( VNODE_TO_S5FS( vnode ) )) < 0 )
                 return block_no;
@@ -243,8 +245,7 @@ s5_read_file(struct vnode *vnode, off_t seek, char *dest, size_t len)
     if( len > (vnode->vn_len - seek) )
         len = vnode->vn_len - seek;
     size_t temp = len;
-    /* If the particular block is sparse, then we need to not call pframe_get, because
-    // that would allocate a new block */
+
     while( temp > 0 ) {
 
         /* First, get the block/page number that we must read from */
@@ -273,7 +274,6 @@ s5_read_file(struct vnode *vnode, off_t seek, char *dest, size_t len)
             temp -= (S5_BLOCK_SIZE - file_offset);
             seek += (S5_BLOCK_SIZE - file_offset);
             dest_offset += ( S5_BLOCK_SIZE - file_offset );
-            
         }
     }
     return len;
